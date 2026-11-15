@@ -5753,7 +5753,15 @@ impl Renderer {
                 pass.multi_draw_indexed_indirect(indirect, offset, run as u32);
             } else {
                 for d in &draws[i..i + run] {
-                    pass.draw_indexed(d[2]..d[2] + d[0], d[3] as i32, d[4]..d[4] + 1);
+                    // Haswell's Vulkan driver misrenders nonzero first instances. Bind this
+                    // draw's origin at byte zero and keep the shader instance index at zero.
+                    let origin_size = std::mem::size_of::<[f32; 4]>() as u64;
+                    let origin = d[4] as u64 * origin_size;
+                    pass.set_vertex_buffer(
+                        1,
+                        self.instances.slice(origin..origin + origin_size),
+                    );
+                    pass.draw_indexed(d[2]..d[2] + d[0], d[3] as i32, 0..1);
                 }
             }
             i += run;
@@ -8829,6 +8837,7 @@ impl Renderer {
             hdr.lighting = hdr_lighting && hdr.look;
         }
         let oit_on = self.improved_transparency
+            && self.multi_draw
             && !frame.title
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
             && self.native.is_none()
@@ -11562,7 +11571,9 @@ impl Renderer {
         }
         let menu_blur = frame
             .menu_blur
-            .filter(|_| self.config.usage.contains(wgpu::TextureUsages::COPY_SRC));
+            .filter(|_| {
+                self.multi_draw && self.config.usage.contains(wgpu::TextureUsages::COPY_SRC)
+            });
         let blur_at = menu_blur.map_or(0, |_| frame.hud.blur_at);
         self.hud.draw_range(
             encoder,

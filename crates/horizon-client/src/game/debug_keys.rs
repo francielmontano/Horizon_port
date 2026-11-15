@@ -438,9 +438,10 @@ impl Game<'_> {
     /// `DebugEntrySimplePerformanceImpactors`.
     pub(super) fn debug_performance_lines(&self, d: &mut debug_overlay::Displayer) {
         let s = &self.settings;
+        let multi_draw = self.renderer.as_ref().is_some_and(|r| r.multi_draw);
         d.line(format!(
             "{}{}B: {}",
-            if s.improved_transparency {
+            if s.improved_transparency && multi_draw {
                 "improved-transparency "
             } else {
                 ""
@@ -455,7 +456,7 @@ impl Game<'_> {
         d.line("Filtering: None");
         d.line(format!(
             "Terrain Rendering: {}",
-            if self.renderer.as_ref().is_some_and(|r| r.multi_draw) {
+            if multi_draw {
                 "multidrawindirect"
             } else {
                 "draw_indexed (fallback)"
