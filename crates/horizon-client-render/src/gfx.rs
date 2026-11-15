@@ -2190,17 +2190,6 @@ async fn open_with_retry(
             match open_backend(backends, window, offscreen, true, layers, allow_cpu).await {
                 Ok(opened) => {
                     let info = opened.adapter.get_info();
-                    if is_broken_haswell_vulkan(&info) {
-                        log::warn!(
-                            "Horizon renderer: skipping {} on Vulkan because Mesa hasvk suffers from \
-                             vertex corruption on Haswell; falling back to next backend",
-                            info.name
-                        );
-                        return Err(format!(
-                            "Mesa hasvk on Haswell ({}) has broken vertex buffers under Vulkan; falling back",
-                            info.name
-                        ));
-                    }
                     log::warn!(
                         "Horizon renderer: using {} although its driver reports no Vulkan \
                          conformance version",
@@ -2215,10 +2204,9 @@ async fn open_with_retry(
         Ok(opened) => Ok(opened),
     }
 }
-/// Intel Haswell (Gen 7.5) Mesa Vulkan driver (`hasvk`) reports 0.0.0.0 and suffers
-/// from severe vertex buffer corruption and polygon tearing (#9912), but its OpenGL driver
-/// (`crocus`) is fully conformant and stable. Ivy Bridge (`IVB`) keeps Vulkan (#4059).
-pub(crate) fn is_broken_haswell_vulkan(info: &wgpu::AdapterInfo) -> bool {
+/// Mesa hasvk on Intel Haswell has reported corruption in the indirect terrain path (#9912).
+/// Keep the physical Vulkan adapter usable, but draw terrain sections individually.
+fn haswell_vulkan_direct_draws(info: &wgpu::AdapterInfo) -> bool {
     info.backend == wgpu::Backend::Vulkan
         && info.vendor == 0x8086
         && (matches!(
@@ -4578,9 +4566,11 @@ impl Renderer {
                 );
                 visbuffer::Visbuffer::new(&device, &bindings, f, frame_format, &sprite_constants)
             });
-        let multi_draw = device
-            .features()
-            .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
+        // Avoid the indirect terrain path on Haswell's Mesa Vulkan driver.
+        let multi_draw = !haswell_vulkan_direct_draws(&adapter.get_info())
+            && device
+                .features()
+                .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
             && adapter
                 .get_downlevel_capabilities()
                 .flags
@@ -14026,7 +14016,7 @@ mod sprite_upload_tests {
     }
 
     #[test]
-    fn broken_haswell_vulkan_detects_haswell_and_leaves_ivy_bridge() {
+    fn haswell_vulkan_uses_direct_terrain_draws() {
         let mut info = wgpu::AdapterInfo {
             name: "Intel(R) HD Graphics 4400 (HSW GT2)".into(),
             vendor: 0x8086,
@@ -14041,18 +14031,18 @@ mod sprite_upload_tests {
             transient_saves_memory: None,
             limit_bucket: None,
         };
-        assert!(is_broken_haswell_vulkan(&info));
+        assert!(haswell_vulkan_direct_draws(&info));
 
         // Ivy Bridge keeps Vulkan (#4059)
         info.name = "Intel(R) HD Graphics 4000 (IVB GT2)".into();
         info.device = 0x0166;
-        assert!(!is_broken_haswell_vulkan(&info));
+        assert!(!haswell_vulkan_direct_draws(&info));
 
         // Haswell on OpenGL is stable (crocus)
         info.name = "Intel(R) HD Graphics 4400 (HSW GT2)".into();
         info.device = 0x0a16;
         info.backend = wgpu::Backend::Gl;
-        assert!(!is_broken_haswell_vulkan(&info));
+        assert!(!haswell_vulkan_direct_draws(&info));
     }
 
     #[test]

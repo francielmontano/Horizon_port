@@ -458,7 +458,7 @@ impl Game<'_> {
             if self.renderer.as_ref().is_some_and(|r| r.multi_draw) {
                 "multidrawindirect"
             } else {
-                "naive"
+                "draw_indexed (fallback)"
             }
         ));
     }
