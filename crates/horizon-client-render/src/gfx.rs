@@ -4475,7 +4475,10 @@ impl Renderer {
         });
         let static_entity_index_quads = 1 << 14;
         let static_entity_indices = Self::quad_indices(&device, static_entity_index_quads);
-        let flat_wanted = flat::wanted(&adapter, &device);
+        let haswell_vulkan = haswell_vulkan_direct_draws(&adapter.get_info());
+        // Haswell's hasvk path must use ordinary vertex attributes: its indirect and
+        // vertex-pulled terrain paths can return corrupted positions.
+        let flat_wanted = !haswell_vulkan && flat::wanted(&adapter, &device);
         // Metal draws solid terrain in two passes (`split_solid`): meshes put all
         // their opaque quads first, so each pass draws its part in a run or two.
         crate::mesher::group_parts(adapter.get_info().backend == wgpu::Backend::Metal);
@@ -4567,7 +4570,7 @@ impl Renderer {
                 visbuffer::Visbuffer::new(&device, &bindings, f, frame_format, &sprite_constants)
             });
         // Avoid the indirect terrain path on Haswell's Mesa Vulkan driver.
-        let multi_draw = !haswell_vulkan_direct_draws(&adapter.get_info())
+        let multi_draw = !haswell_vulkan
             && device
                 .features()
                 .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
@@ -5753,15 +5756,20 @@ impl Renderer {
                 pass.multi_draw_indexed_indirect(indirect, offset, run as u32);
             } else {
                 for d in &draws[i..i + run] {
-                    // Haswell's Vulkan driver misrenders nonzero first instances. Bind this
-                    // draw's origin at byte zero and keep the shader instance index at zero.
+                    // Bind this draw's origin at byte zero and keep the shader instance
+                    // index at zero, avoiding nonzero first_instance on weak Vulkan drivers.
                     let origin_size = std::mem::size_of::<[f32; 4]>() as u64;
                     let origin = d[4] as u64 * origin_size;
-                    pass.set_vertex_buffer(
-                        1,
-                        self.instances.slice(origin..origin + origin_size),
-                    );
-                    pass.draw_indexed(d[2]..d[2] + d[0], d[3] as i32, 0..1);
+                    pass.set_vertex_buffer(1, self.instances.slice(origin..origin + origin_size));
+                    if pulled {
+                        pass.draw_indexed(d[2]..d[2] + d[0], d[3] as i32, 0..1);
+                    } else {
+                        // Rebase ordinary vertex fetches in the binding instead of passing a
+                        // nonzero base_vertex through hasvk. Indices remain local to the mesh.
+                        let vertex_offset = u64::from(d[3]) * self.arena.stride();
+                        pass.set_vertex_buffer(0, vertices.slice(vertex_offset..));
+                        pass.draw_indexed(d[2]..d[2] + d[0], 0, 0..1);
+                    }
                 }
             }
             i += run;
@@ -11569,11 +11577,9 @@ impl Renderer {
             let first = overlay.first_crosshair;
             pass.draw(0..4, first..first + overlay.crosshair);
         }
-        let menu_blur = frame
-            .menu_blur
-            .filter(|_| {
-                self.multi_draw && self.config.usage.contains(wgpu::TextureUsages::COPY_SRC)
-            });
+        let menu_blur = frame.menu_blur.filter(|_| {
+            self.multi_draw && self.config.usage.contains(wgpu::TextureUsages::COPY_SRC)
+        });
         let blur_at = menu_blur.map_or(0, |_| frame.hud.blur_at);
         self.hud.draw_range(
             encoder,
